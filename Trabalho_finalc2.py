@@ -3,133 +3,114 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-# Configuração inicial da página (precisa ser o primeiro comando do Streamlit)
 st.set_page_config(page_title="Simulador Térmico - Usinagem", layout="wide")
 
-
-# --- Definição das Classes (Herança) ---
+# classes dos materiais
 
 class Tarugo:
-    """Classe base com as dimensões geométricas comuns a qualquer peça cilíndrica."""
-    def __init__(self, comprimento, diametro, temperatura_ambiente=25.0):
+    def __init__(self, comprimento, diametro, temp_ambiente=25.0):
         self.comprimento = comprimento
         self.diametro = diametro
-        self.temperatura_ambiente = temperatura_ambiente
-
+        self.temp_ambiente = temp_ambiente
 
 class Poliamida(Tarugo):
-    def __init__(self, comprimento, diametro, temperatura_ambiente=25.0):
-        super().__init__(comprimento, diametro, temperatura_ambiente)
+    def __init__(self, comprimento, diametro):
+        super().__init__(comprimento, diametro)
         self.nome = "Poliamida"
-        self.limite_termico = 120.0   # Temperatura crítica de amolecimento (°C)
-        self.fator_atrito = 0.065     # Polímero retém bastante calor no contato com a ferramenta
-        self.fator_conducao = 0.10    # Baixa difusão térmica para o interior da peça
+        self.limite = 120.0   # temperatura em que amolece
+        self.atrito = 0.065   # quanto calor o corte gera
+        self.conducao = 0.10  # quanto calor vai pra dentro da peça
 
 
 class Acrilico(Tarugo):
-    def __init__(self, comprimento, diametro, temperatura_ambiente=25.0):
-        super().__init__(comprimento, diametro, temperatura_ambiente)
+    def __init__(self, comprimento, diametro):
+        super().__init__(comprimento, diametro)
         self.nome = "Acrílico"
-        self.limite_termico = 100.0
-        self.fator_atrito = 0.075
-        self.fator_conducao = 0.08
+        self.limite = 100.0
+        self.atrito = 0.075
+        self.conducao = 0.08
 
 
 class Aluminio(Tarugo):
-    def __init__(self, comprimento, diametro, temperatura_ambiente=25.0):
-        super().__init__(comprimento, diametro, temperatura_ambiente)
+    def __init__(self, comprimento, diametro):
+        super().__init__(comprimento, diametro)
         self.nome = "Alumínio"
-        self.limite_termico = 580.0
-        self.fator_atrito = 0.030     # Menor geração localizada de calor
-        self.fator_conducao = 0.75    # Alta condutividade: espalha o calor rápido para o núcleo
+        self.limite = 580.0
+        self.atrito = 0.030
+        self.conducao = 0.75
+        
+
+# simulação (monte carlo)
+
+def simular(peca, rpm, prof, avanco, n=500):
+    linhas = 10    # 0 = superfície, 9 = núcleo
+    colunas = 50   # posições ao longo do comprimento
+    falhas = np.zeros((linhas, colunas))
+
+    for i in range(n):
+        # a peça começa toda na temperatura ambiente
+        temp = np.full((linhas, colunas), peca.temp_ambiente)
+
+        for c in range(colunas):
+            # variação aleatória em volta de 1 (vibração, desgaste...)
+            ruido = np.random.normal(1.0, 0.1)
+            calor = peca.atrito * rpm * prof * avanco * ruido
+
+            # a peça toda esfria um pouco
+            temp = temp - 0.02 * (temp - peca.temp_ambiente)
+
+            # esquenta a coluna onde a ferramenta está
+            temp[0, c] += calor
+            temp[1:, c] += calor * peca.conducao
+
+        # conta onde passou do limite (True vale 1)
+        falhas += (temp > peca.limite)
+
+    return falhas / n * 100
 
 
-# --- Simulação Numérica (Monte Carlo + NumPy) ---
-
-def simular_probabilidade_superaquecimento(peca, rpm, profundidade, avanco, n_simulacoes=500):
-    """
-    Discretiza a seção longitudinal do tarugo em uma matriz 2D (raio x comprimento)
-    e estima a probabilidade de cada célula ultrapassar o limite térmico do material.
-    """
-    linhas = 10   # Camadas radiais (0 = superfície usinada, 9 = núcleo)
-    colunas = 50  # Discretização do avanço ao longo do comprimento
-    taxa_resfriamento_ar = 0.02
-
-    # Acumulador de quantas vezes cada ponto da malha falhou nas N simulações
-    contagem_falhas = np.zeros((linhas, colunas))
-
-    for _ in range(n_simulacoes):
-        # Inicializa a peça inteira na temperatura ambiente
-        malha_termica = np.full((linhas, colunas), peca.temperatura_ambiente)
-
-        for passe_atual in range(colunas):
-            # Ruído gaussiano (±10%) para representar vibração, desgaste e variação de corte
-            variacao_processo = np.random.normal(loc=1.0, scale=0.10)
-            calor_gerado = (peca.fator_atrito * rpm * profundidade * avanco) * variacao_processo
-
-            # Resfriamento convectivo aplicado de forma vetorizada na matriz inteira
-            calor_perdido = taxa_resfriamento_ar * (malha_termica - peca.temperatura_ambiente)
-            malha_termica -= calor_perdido
-
-            # Aporte de calor na superfície (linha 0) e condução parcial para as camadas internas
-            malha_termica[0, passe_atual] += calor_gerado
-            malha_termica[1:, passe_atual] += calor_gerado * peca.fator_conducao
-
-        # Comparação booleana: soma 1 nas posições que ultrapassaram o limite térmico
-        contagem_falhas += (malha_termica > peca.limite_termico)
-
-    # Retorna a matriz em porcentagem (0% a 100%)
-    return (contagem_falhas / n_simulacoes) * 100
-
-
-# --- Interface Web (Streamlit) ---
+# interface
 
 st.title("Simulador de Risco Térmico na Usinagem")
-st.write("Análise probabilística (Monte Carlo) de superaquecimento durante o torneamento cilíndrico.")
+st.write("Simulação de Monte Carlo do superaquecimento no torneamento de um tarugo.")
 
-st.sidebar.header("Parâmetros do Processo")
+st.sidebar.header("Parâmetros")
 
-# Dicionário para instanciar a classe escolhida sem precisar de vários if/elif
-materiais_disponiveis = {
+materiais = {
     "Poliamida": Poliamida,
     "Acrílico": Acrilico,
     "Alumínio": Aluminio
 }
 
-material_escolhido = st.sidebar.selectbox("Material do Tarugo:", list(materiais_disponiveis.keys()))
-rpm = st.sidebar.slider("Rotação do Torno (RPM):", min_value=500, max_value=3500, value=1500, step=100)
-profundidade = st.sidebar.slider("Profundidade de Corte (mm):", min_value=0.5, max_value=5.0, value=2.0, step=0.1)
-avanco = st.sidebar.slider("Avanço da Ferramenta (mm/rot):", min_value=0.1, max_value=1.5, value=0.5, step=0.1)
+escolha = st.sidebar.selectbox("Material:", list(materiais.keys()))
+rpm = st.sidebar.slider("Rotação (RPM):", 500, 3500, 1500, 100)
+prof = st.sidebar.slider("Profundidade de corte (mm):", 0.5, 5.0, 2.0, 0.1)
+avanco = st.sidebar.slider("Avanço (mm/rot):", 0.1, 1.5, 0.5, 0.1)
 
-# Cria o objeto da subclasse correspondente (tarugo padrão de 200mm x Ø50mm)
-classe_material = materiais_disponiveis[material_escolhido]
-peca_atual = classe_material(comprimento=200, diametro=50)
+# tarugo de 200 mm de comprimento e 50 mm de diâmetro
+peca = materiais[escolha](200, 50)
 
-# Executa a simulação e extrai os indicadores principais da matriz resultante
-probabilidades = simular_probabilidade_superaquecimento(peca_atual, rpm, profundidade, avanco)
-risco_maximo = float(np.max(probabilidades))
-risco_medio_superficie = float(np.mean(probabilidades[0, :]))
+prob = simular(peca, rpm, prof, avanco)
+risco_max = float(np.max(prob))
+risco_med = float(np.mean(prob[0, :]))
 
-# Exibição das métricas resumidas
 col1, col2, col3 = st.columns(3)
-col1.metric("Limite Térmico", f"{peca_atual.limite_termico:.0f} °C")
-col2.metric("Risco Máximo na Peça", f"{risco_maximo:.1f}%")
-col3.metric("Risco Médio na Superfície", f"{risco_medio_superficie:.1f}%")
+col1.metric("Limite térmico", f"{peca.limite:.0f} °C")
+col2.metric("Risco máximo", f"{risco_max:.1f}%")
+col3.metric("Risco médio na superfície", f"{risco_med:.1f}%")
 
-# Diagnóstico automático baseado no pico de probabilidade
-if risco_maximo >= 50.0:
-    st.error(f"ALERTA CRÍTICO: Risco de {risco_maximo:.1f}% de falha térmica na superfície ({peca_atual.nome}). Reduza o RPM ou a profundidade.")
-elif risco_maximo >= 15.0:
-    st.warning(f"ATENÇÃO: Risco moderado ({risco_maximo:.1f}%) de superaquecimento localizado no final do passe.")
+if risco_max >= 50:
+    st.error(f"ALERTA: risco de {risco_max:.1f}% de falha térmica ({peca.nome}). Reduza o RPM ou a profundidade.")
+elif risco_max >= 15:
+    st.warning(f"Atenção: risco moderado ({risco_max:.1f}%) de superaquecimento no final do passe.")
 else:
-    st.success(f"OPERAÇÃO SEGURA: Risco térmico controlado ({risco_maximo:.1f}%) para {peca_atual.nome}.")
+    st.success(f"Operação segura: risco de {risco_max:.1f}% para {peca.nome}.")
 
-# Plotagem do mapa de calor
 fig, ax = plt.subplots(figsize=(10, 4))
-sns.heatmap(probabilidades, cmap="YlOrRd", vmin=0, vmax=100, ax=ax, cbar_kws={"label": "Probabilidade (%)"})
-ax.set_title(f"Mapa de Risco Térmico - {peca_atual.nome} ({peca_atual.comprimento}mm x Ø{peca_atual.diametro}mm)")
-ax.set_xlabel("Comprimento da Peça (Avanço da Ferramenta)")
-ax.set_ylabel("Profundidade (0 = Superfície, 9 = Núcleo)")
+sns.heatmap(prob, cmap="YlOrRd", vmin=0, vmax=100, ax=ax, cbar_kws={"label": "Probabilidade (%)"})
+ax.set_title(f"Mapa de risco térmico - {peca.nome} ({peca.comprimento}mm x Ø{peca.diametro}mm)")
+ax.set_xlabel("Comprimento da peça")
+ax.set_ylabel("Profundidade (0 = superfície, 9 = núcleo)")
 
 st.pyplot(fig)
-plt.close(fig)  # Libera a figura da memória após renderizar
+plt.close(fig)
